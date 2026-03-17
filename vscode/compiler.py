@@ -3,6 +3,7 @@ import time
 import json
 import venv
 import inspect
+import shutil
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -106,8 +107,14 @@ def create_extension_js(extension):
 
     imports, contents = code.split("// func: registerCommands")
 
-    file = os.path.split(inspect.stack()[-1].filename)[-1]
-    imports = imports.replace("<filepath>", file)
+    # The file that called build()
+    caller_file = inspect.stack()[-1].filename
+    file = os.path.split(caller_file)[-1]
+
+    # Copy the caller file to extension.py in the current directory
+    # so that the extension.js can find it.
+    shutil.copy(caller_file, "extension.py")
+
     commands_code = "function registerCommands(context) {\n\t"
     for cmd in extension.commands:
         args = cmd.extension_string, cmd.name
@@ -129,7 +136,7 @@ def build(extension, publish=False) -> None:
             "\033[0m",
         )
         with open("requirements.txt", "w") as f:
-            f.write("vscode.py==2.0.0b2")
+            f.write("vscode.py\n")
 
     if not os.path.isdir("./venv"):
         print(f"\033[1;37;49mSetting up the virtual environment...", "\033[0m")
@@ -139,7 +146,14 @@ def build(extension, publish=False) -> None:
     python_path = os.path.join(os.getcwd(), "venv/Scripts/python.exe")
     if not os.path.exists(python_path):
         python_path = os.path.join(os.getcwd(), "venv/bin/python")
-    os.system(f"{python_path} -m pip install -r requirements.txt")
+
+    # If we are in the vscode.py repo itself, we might want to install it in editable mode
+    # or just ensure it's available.
+    # For now, let's just run pip install.
+    if os.path.exists("setup.py"):
+         os.system(f"{python_path} -m pip install -e .")
+    else:
+         os.system(f"{python_path} -m pip install -r requirements.txt")
 
     create_launch_json()
     print(f"\033[1;37;49mCreating package.json...", "\033[0m")

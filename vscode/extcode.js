@@ -19,25 +19,92 @@ function commandCallback(command) {
 
 // func: registerCommands
 
-function activate(context) {
+function getPythonPath() {
+  const venvPath = path.join(__dirname, "venv");
+  const pythonBin = process.platform === "win32" ? "Scripts/python.exe" : "bin/python";
+  const fullPath = path.join(venvPath, pythonBin);
+  if (fs.existsSync(fullPath)) {
+    return fullPath;
+  }
+  return null;
+}
+
+function findPython(extensionName) {
+  const commands = [
+    vscode.workspace.getConfiguration(extensionName).get("pythonPath"),
+    vscode.workspace.getConfiguration("python").get("defaultInterpreterPath"),
+    vscode.workspace.getConfiguration("python").get("pythonPath"),
+    "python3",
+    "python",
+    "py"
+  ];
+  for (const cmd of commands) {
+    if (!cmd) continue;
+    try {
+      execSync(`${cmd} --version`, { stdio: 'ignore' });
+      return cmd;
+    } catch (e) {
+      // ignore
+    }
+  }
+  return null;
+}
+
+async function activate(context) {
   registerCommands(context);
 
-  let pyVar = process.platform == "win32" ? "python" : "python3";
-  let venvPath = path.join(__dirname, "./venv");
-  let createvenvPath = path.join(venvPath, "createvenv.txt");
-  if (!fs.existsSync(createvenvPath)) {
-    execSync(`${pyVar} -m venv ${venvPath}`);
-    fs.writeFileSync(
-      createvenvPath,
-      "Delete this file only if you want to recreate the venv! Do not include this file when you package/publish the extension."
-    );
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
+  const extensionName = pkg.name;
+
+  let pyVar = findPython(extensionName);
+  if (!pyVar) {
+    vscode.window.showErrorMessage("Python was not found. Please install Python to use this extension.");
+    return;
   }
 
-  pyVar = path.join(
-    venvPath,
-    process.platform == "win32" ? "Scripts/python.exe" : "bin/python"
-  );
-  execSync(`${pyVar} -m pip install -r ${requirementsPath}`);
+  let venvPath = path.join(__dirname, "./venv");
+  let createvenvPath = path.join(venvPath, "createvenv.txt");
+  let shouldInstall = false;
+
+  if (!fs.existsSync(createvenvPath)) {
+    try {
+      console.log("Creating virtual environment...");
+      execSync(`${pyVar} -m venv ${venvPath}`);
+      fs.writeFileSync(
+        createvenvPath,
+        "Delete this file only if you want to recreate the venv! Do not include this file when you package/publish the extension."
+      );
+      shouldInstall = true;
+    } catch (e) {
+      vscode.window.showErrorMessage("Failed to create virtual environment: " + e.message);
+      return;
+    }
+  }
+
+  pyVar = getPythonPath() || pyVar;
+
+  const lastInstallPath = path.join(venvPath, "last_install.txt");
+  if (!shouldInstall && fs.existsSync(requirementsPath)) {
+      if (!fs.existsSync(lastInstallPath)) {
+          shouldInstall = true;
+      } else {
+          const reqMtime = fs.statSync(requirementsPath).mtimeMs;
+          const lastMtime = fs.statSync(lastInstallPath).mtimeMs;
+          if (reqMtime > lastMtime) {
+              shouldInstall = true;
+          }
+      }
+  }
+
+  if (shouldInstall && fs.existsSync(requirementsPath)) {
+    try {
+      console.log("Installing dependencies...");
+      execSync(`${pyVar} -m pip install -r ${requirementsPath}`);
+      fs.writeFileSync(lastInstallPath, new Date().toISOString());
+    } catch (e) {
+      vscode.window.showWarningMessage("Failed to install dependencies: " + e.message);
+    }
+  }
 
   let py = spawn(pyVar, [pythonExtensionPath, "--run-webserver"]);
   let webviews = {};
@@ -49,9 +116,10 @@ function activate(context) {
       console.log(mes);
     }
     let arr = mes.split(" ");
-    if (arr.length == 3 && arr[arr.length - 1].startsWith("ws://localhost:")) {
-      ws = new wslib.WebSocket(arr[arr.length - 1]);
-      console.log("Connecting to " + arr[arr.length - 1]);
+    if (arr.length >= 3 && arr[arr.length - 1].startsWith("ws://localhost:")) {
+      const uri = arr[arr.length - 1];
+      ws = new wslib.WebSocket(uri);
+      console.log("Connecting to " + uri);
       ws.on("open", () => {
         console.log("Connected!");
         ws.send(JSON.stringify({ type: 2, event: "activate" }));
@@ -83,6 +151,10 @@ function activate(context) {
   });
   py.stderr.on("data", (data) => {
     console.error(`An Error occurred in the python script: ${data}`);
+  });
+
+  py.on('close', (code) => {
+      console.log(`Python process exited with code ${code}`);
   });
 }
 
